@@ -67,11 +67,11 @@ test "OB: borrow and give back" {
     var o1 = Owner(usize){ .data = 0 };
     defer o1.deinit();
 
-    var b1 = o1.borrow();
+    const b1 = o1.borrow();
     _ = b1;
     var o2 = o1.give();
     defer o2.deinit();
 
-    var o3 = o2.give();
+    const o3 = o2.give();
     _ = o3;
 }
