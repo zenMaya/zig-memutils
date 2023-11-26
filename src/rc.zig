@@ -3,18 +3,6 @@ const std = @import("std");
 const meta = @import("meta.zig");
 
 pub fn Rc(comptime T: type) type {
-    const Deinit_Fn = *const fn (*T, allocator: std.mem.Allocator) void;
-
-    const deinit_fn_impl = meta.get_deinit_fn(T);
-
-    const default_deinit_fn: Deinit_Fn = struct {
-        pub fn deinit_fn(self: *T, allocator: std.mem.Allocator) void {
-            if (deinit_fn_impl) |impl| {
-                impl(self, allocator);
-            }
-        }
-    }.deinit_fn;
-
     return struct {
         const Container = struct {
             data: T,
@@ -22,17 +10,21 @@ pub fn Rc(comptime T: type) type {
         };
         const RcImpl = @This();
 
+        const Deinit_Fn = *const fn (*T, allocator: std.mem.Allocator) void;
+        pub fn empty_deinit_fn(_: *T, _: std.mem.Allocator) void {}
+
         /// `true` if the Rc will call the T's
         /// `deinit(...)` function.
-        pub const has_deinit_fn = deinit_fn_impl != null;
+        pub fn has_deinit_fn(self: RcImpl) bool {
+            return self.deinit_fn != empty_deinit_fn;
+        }
 
-        allocator: std.mem.Allocator,
         container: *Container,
+        allocator: std.mem.Allocator,
         deinit_fn: Deinit_Fn,
 
-        fn _init_w_deinit_fn(data: T, allocator: std.mem.Allocator, deinit_fn: Deinit_Fn) !RcImpl {
+        pub fn init_w_deinit_fn(data: T, allocator: std.mem.Allocator, deinit_fn: Deinit_Fn) !RcImpl {
             return .{
-                .allocator = allocator,
                 .container = blk: {
                     const ptr = try allocator.create(Container);
                     ptr.* = .{
@@ -41,12 +33,14 @@ pub fn Rc(comptime T: type) type {
                     };
                     break :blk ptr;
                 },
+                .allocator = allocator,
                 .deinit_fn = deinit_fn,
             };
         }
 
         pub fn init(data: T, allocator: std.mem.Allocator) !RcImpl {
-            return _init_w_deinit_fn(data, allocator, default_deinit_fn);
+            const default_deinit_fn = meta.get_deinit_fn(T) orelse empty_deinit_fn;
+            return init_w_deinit_fn(data, allocator, default_deinit_fn);
         }
 
         pub fn atomic(self: RcImpl) RcImpl {
@@ -121,8 +115,7 @@ test "Rc: struct with deinit" {
 
     var rc = try Rc(Struct).init(try Struct.init(std.testing.allocator), std.testing.allocator);
     defer rc.drop();
-    try std.testing.expect(@TypeOf(rc).has_deinit_fn);
-
+    try std.testing.expect(rc.has_deinit_fn());
     var rc2 = rc.borrow();
     defer rc2.drop();
 }
@@ -138,7 +131,27 @@ const B = struct {
 test "Rc: recursive comptime structure" {
     var b = try Rc(B).init(.{ .a = undefined }, std.testing.allocator);
     defer b.drop();
-    try std.testing.expect(!@TypeOf(b).has_deinit_fn);
+    try std.testing.expect(!b.has_deinit_fn());
     const rawPtr = b.get();
     _ = rawPtr;
+}
+
+const Rc_C = Rc(C);
+const C = struct {
+    c: ?Rc(C),
+
+    pub fn deinit(self: *C, _: std.mem.Allocator) void {
+        if (self.c) |*c| {
+            c.drop();
+        }
+    }
+};
+
+test "Rc: test Rc inside the struct" {
+    var c_0 = try Rc_C.init_w_deinit_fn(.{ .c = null }, std.testing.allocator, C.deinit);
+    defer c_0.drop();
+    var c_1 = try Rc_C.init_w_deinit_fn(.{ .c = c_0.borrow() }, std.testing.allocator, C.deinit);
+    defer c_1.drop();
+    var c_2 = try Rc_C.init(.{ .c = c_1.borrow() }, std.testing.allocator);
+    defer c_2.drop();
 }
